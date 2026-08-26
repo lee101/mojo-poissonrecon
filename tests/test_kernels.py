@@ -142,8 +142,8 @@ def test_residual_simd_tail_and_parallel_threshold(n):
     assert actual_norm == pytest.approx(np.linalg.norm(expected), rel=2e-15)
 
 
-def test_parallel_red_black_relaxation_parity():
-    n = 65
+@pytest.mark.parametrize("n", [9, 65], ids=["simd-tail-serial", "parallel-threshold"])
+def test_red_black_relaxation_simd_tail_and_parallel_threshold(n):
     rng = np.random.default_rng(71)
     solution = rng.normal(size=(n, n, n))
     expected = solution.copy()
@@ -163,6 +163,26 @@ def test_parallel_red_black_relaxation_parity():
         addr(solution), addr(rhs), addr(screen), n, point_weight, 1
     )
     assert np.allclose(solution, expected, rtol=0, atol=2e-15)
+
+
+@pytest.mark.parametrize("n", [14, 65], ids=["simd-tail-serial", "parallel-threshold"])
+def test_dual_vertex_count_simd_tail_and_parallel_threshold(n):
+    rng = np.random.default_rng(n)
+    field = rng.normal(size=(n, n, n))
+    below = field < 0.0
+    below_count = sum(
+        below[dz : dz + n - 1, dy : dy + n - 1, dx : dx + n - 1]
+        for dz in range(2)
+        for dy in range(2)
+        for dx in range(2)
+    )
+    expected = np.count_nonzero((below_count != 0) & (below_count != 8))
+    scratch = np.empty(((n - 1) + 3) // 4, dtype=np.int64)
+    dummy = np.zeros(1, dtype=np.float64)
+    actual = lib().mpr_dual_vertices_f64(
+        addr(field), addr(field), n, 0.0, addr(scratch), addr(dummy), addr(dummy), 0
+    )
+    assert actual == expected
 
 
 def test_dual_contour_matches_numpy_source_translation():

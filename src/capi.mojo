@@ -1,7 +1,7 @@
 """Flat-buffer screened Poisson reconstruction kernels."""
 
 from std.ffi import external_call
-from std.math import sqrt
+from std.math import iota, sqrt
 from std.runtime.asyncrt import TaskGroup
 from std.sys.info import simd_width_of as simdwidthof
 
@@ -327,6 +327,7 @@ def mpr_relax_f64(
 
     @parameter
     def work(task: Int):
+        comptime W = simdwidthof[DType.float64]()
         var work_solution = fp(solution_address)
         var work_rhs = fp(rhs_address)
         var work_screen = fp(screen_address)
@@ -334,8 +335,64 @@ def mpr_relax_f64(
         var end_z = min(start_z + GRID_Z_CHUNK, n)
         for z in range(start_z, end_z):
             for y in range(n):
-                var start_x = (active_color - ((y + z) & 1)) & 1
-                for x in range(start_x, n, 2):
+                var degree = 2
+                if y > 0:
+                    degree += 1
+                if y + 1 < n:
+                    degree += 1
+                if z > 0:
+                    degree += 1
+                if z + 1 < n:
+                    degree += 1
+                if ((y + z) & 1) == active_color:
+                    var boundary_idx = grid_index(0, y, z, n)
+                    var boundary_pair = stencil_sum_and_degree(
+                        work_solution, 0, y, z, n
+                    )
+                    var boundary_screening = (
+                        point_weight * work_screen[boundary_idx] * h_inv2
+                    )
+                    var boundary_diagonal = (
+                        Float64(boundary_pair[1]) * h_inv2
+                        + boundary_screening
+                    )
+                    if boundary_diagonal > 1.0e-30:
+                        work_solution[boundary_idx] = (
+                            work_rhs[boundary_idx]
+                            + boundary_pair[0] * h_inv2
+                        ) / boundary_diagonal
+                var vector_end = 1 + (n - 2) // W * W
+                for x in range(1, vector_end, W):
+                    var idx = grid_index(x, y, z, n)
+                    var center = work_solution.load[width=W](idx)
+                    var neighbor_sum = (
+                        work_solution.load[width=W](idx - 1)
+                        + work_solution.load[width=W](idx + 1)
+                    )
+                    if y > 0:
+                        neighbor_sum += work_solution.load[width=W](idx - n)
+                    if y + 1 < n:
+                        neighbor_sum += work_solution.load[width=W](idx + n)
+                    if z > 0:
+                        neighbor_sum += work_solution.load[width=W](idx - n * n)
+                    if z + 1 < n:
+                        neighbor_sum += work_solution.load[width=W](idx + n * n)
+                    var screening = (
+                        point_weight
+                        * work_screen.load[width=W](idx)
+                        * h_inv2
+                    )
+                    var diagonal = Float64(degree) * h_inv2 + screening
+                    var updated = (
+                        work_rhs.load[width=W](idx) + neighbor_sum * h_inv2
+                    ) / diagonal
+                    var active = (
+                        (iota[DType.int, W](x) + y + z) & 1
+                    ).eq(active_color)
+                    work_solution.store(idx, active.select(updated, center))
+                for x in range(vector_end, n):
+                    if ((x + y + z) & 1) != active_color:
+                        continue
                     var idx = grid_index(x, y, z, n)
                     var pair = stencil_sum_and_degree(
                         work_solution, x, y, z, n
@@ -512,17 +569,79 @@ def mpr_restrict_f64(
 
     @parameter
     def work(task: Int):
+        comptime W = simdwidthof[DType.float64]()
         var work_fine = fp(fine_address)
         var work_coarse = fp(coarse_address)
         var start_z = task * GRID_Z_CHUNK
         var end_z = min(start_z + GRID_Z_CHUNK, coarse_n)
         for z in range(start_z, end_z):
             for y in range(coarse_n):
-                for x in range(coarse_n):
+                var fz = 2 * z
+                var fy = 2 * y
+                var boundary_sum: Float64 = 0.0
+                var boundary_weight: Float64 = 0.0
+                for oz in range(-1, 2):
+                    var boundary_z = fz + oz
+                    if boundary_z < 0 or boundary_z >= fine_n:
+                        continue
+                    var boundary_wz: Float64 = 2.0 if oz == 0 else 1.0
+                    for oy in range(-1, 2):
+                        var boundary_y = fy + oy
+                        if boundary_y < 0 or boundary_y >= fine_n:
+                            continue
+                        var boundary_wy: Float64 = 2.0 if oy == 0 else 1.0
+                        for ox in range(0, 2):
+                            var boundary_wx: Float64 = 2.0 if ox == 0 else 1.0
+                            var boundary_w = (
+                                boundary_wx * boundary_wy * boundary_wz
+                            )
+                            boundary_sum += (
+                                work_fine[
+                                    grid_index(
+                                        ox, boundary_y, boundary_z, fine_n
+                                    )
+                                ]
+                                * boundary_w
+                            )
+                            boundary_weight += boundary_w
+                work_coarse[grid_index(0, y, z, coarse_n)] = (
+                    boundary_sum / boundary_weight
+                )
+                var vector_end = 1 + (coarse_n - 2) // W * W
+                for x in range(1, vector_end, W):
+                    var weighted_sums = SIMD[DType.float64, W](0.0)
+                    var weight_sum: Float64 = 0.0
+                    for oz in range(-1, 2):
+                        var zz = fz + oz
+                        if zz < 0 or zz >= fine_n:
+                            continue
+                        var wz: Float64 = 2.0 if oz == 0 else 1.0
+                        for oy in range(-1, 2):
+                            var yy = fy + oy
+                            if yy < 0 or yy >= fine_n:
+                                continue
+                            var wy: Float64 = 2.0 if oy == 0 else 1.0
+                            var row = grid_index(2 * x, yy, zz, fine_n)
+                            weighted_sums += (
+                                (work_fine + row - 1).strided_load[width=W](2)
+                                * (wy * wz)
+                            )
+                            weighted_sums += (
+                                (work_fine + row).strided_load[width=W](2)
+                                * (2.0 * wy * wz)
+                            )
+                            weighted_sums += (
+                                (work_fine + row + 1).strided_load[width=W](2)
+                                * (wy * wz)
+                            )
+                            weight_sum += 4.0 * wy * wz
+                    work_coarse.store(
+                        grid_index(x, y, z, coarse_n),
+                        weighted_sums / weight_sum,
+                    )
+                for x in range(vector_end, coarse_n):
                     var weighted_sum: Float64 = 0.0
                     var weight_sum: Float64 = 0.0
-                    var fz = 2 * z
-                    var fy = 2 * y
                     var fx = 2 * x
                     for oz in range(-1, 2):
                         var zz = fz + oz
@@ -738,34 +857,111 @@ def mpr_dual_vertices_f64(
     var cells = n - 1
     var count = 0
     if capacity <= 0:
-        for z in range(cells):
-            for y in range(cells):
-                for x in range(cells):
-                    var below = 0
-                    for corner in range(8):
-                        if corner_value(field, x, y, z, n, corner) < iso:
-                            below += 1
-                    if below != 0 and below != 8:
-                        count += 1
+        var counts = ip(cell_map_address)
+        var task_count = (cells + GRID_Z_CHUNK - 1) // GRID_Z_CHUNK
+
+        @parameter
+        def count_work(task: Int):
+            comptime W = simdwidthof[DType.float64]()
+            var work_field = fp(field_address)
+            var work_counts = ip(cell_map_address)
+            var local_count: Int64 = 0
+            var start_z = task * GRID_Z_CHUNK
+            var end_z = min(start_z + GRID_Z_CHUNK, cells)
+            for z in range(start_z, end_z):
+                for y in range(cells):
+                    for vector_x in range(0, cells // W * W, W):
+                        var x = vector_x
+                        var below = SIMD[DType.int, W](0)
+                        var row0 = grid_index(x, y, z, n)
+                        var row1 = grid_index(x, y + 1, z, n)
+                        var row2 = grid_index(x, y, z + 1, n)
+                        var row3 = grid_index(x, y + 1, z + 1, n)
+                        below += work_field.load[width=W](row0).lt(iso).select(1, 0)
+                        below += work_field.load[width=W](row0 + 1).lt(iso).select(1, 0)
+                        below += work_field.load[width=W](row1).lt(iso).select(1, 0)
+                        below += work_field.load[width=W](row1 + 1).lt(iso).select(1, 0)
+                        below += work_field.load[width=W](row2).lt(iso).select(1, 0)
+                        below += work_field.load[width=W](row2 + 1).lt(iso).select(1, 0)
+                        below += work_field.load[width=W](row3).lt(iso).select(1, 0)
+                        below += work_field.load[width=W](row3 + 1).lt(iso).select(1, 0)
+                        var active = below.ne(0) & below.ne(8)
+                        local_count += Int64(active.select(1, 0).reduce_add())
+                    for tail_x in range(cells // W * W, cells):
+                        var x = tail_x
+                        var scalar_below = 0
+                        for corner in range(8):
+                            if corner_value(work_field, x, y, z, n, corner) < iso:
+                                scalar_below += 1
+                        if scalar_below != 0 and scalar_below != 8:
+                            local_count += 1
+            work_counts[task] = local_count
+
+        if cells * cells * cells >= PARALLEL_GRID_THRESHOLD:
+            parallelize[count_work](task_count)
+        else:
+            for task in range(task_count):
+                count_work(task)
+        for task in range(task_count):
+            count += Int(counts[task])
         return count
 
     var density = fp(density_address)
     var cell_map = ip(cell_map_address)
     var vertices = fp(vertices_address)
     var vertex_density = fp(vertex_density_address)
-    for idx in range(cells * cells * cells):
-        cell_map[idx] = Int64(-1)
+    var mark_task_count = (cells + GRID_Z_CHUNK - 1) // GRID_Z_CHUNK
+
+    @parameter
+    def mark_work(task: Int):
+        comptime W = simdwidthof[DType.float64]()
+        var work_field = fp(field_address)
+        var work_cell_map = ip(cell_map_address)
+        var start_z = task * GRID_Z_CHUNK
+        var end_z = min(start_z + GRID_Z_CHUNK, cells)
+        for z in range(start_z, end_z):
+            for y in range(cells):
+                for x in range(0, cells // W * W, W):
+                    var below = SIMD[DType.int, W](0)
+                    var row0 = grid_index(x, y, z, n)
+                    var row1 = grid_index(x, y + 1, z, n)
+                    var row2 = grid_index(x, y, z + 1, n)
+                    var row3 = grid_index(x, y + 1, z + 1, n)
+                    below += work_field.load[width=W](row0).lt(iso).select(1, 0)
+                    below += work_field.load[width=W](row0 + 1).lt(iso).select(1, 0)
+                    below += work_field.load[width=W](row1).lt(iso).select(1, 0)
+                    below += work_field.load[width=W](row1 + 1).lt(iso).select(1, 0)
+                    below += work_field.load[width=W](row2).lt(iso).select(1, 0)
+                    below += work_field.load[width=W](row2 + 1).lt(iso).select(1, 0)
+                    below += work_field.load[width=W](row3).lt(iso).select(1, 0)
+                    below += work_field.load[width=W](row3 + 1).lt(iso).select(1, 0)
+                    var active = below.ne(0) & below.ne(8)
+                    work_cell_map.store(
+                        cell_index(x, y, z, cells),
+                        active.select(Int64(0), Int64(-1)),
+                    )
+                for x in range(cells // W * W, cells):
+                    var below = 0
+                    for corner in range(8):
+                        if corner_value(work_field, x, y, z, n, corner) < iso:
+                            below += 1
+                    work_cell_map[cell_index(x, y, z, cells)] = (
+                        Int64(0) if below != 0 and below != 8 else Int64(-1)
+                    )
+
+    if cells * cells * cells >= PARALLEL_GRID_THRESHOLD:
+        parallelize[mark_work](mark_task_count)
+    else:
+        for task in range(mark_task_count):
+            mark_work(task)
     for z in range(cells):
         for y in range(cells):
             for x in range(cells):
+                if cell_map[cell_index(x, y, z, cells)] < 0:
+                    continue
                 var values = SIMD[DType.float64, 8](0.0)
-                var below = 0
                 for corner in range(8):
                     values[corner] = corner_value(field, x, y, z, n, corner)
-                    if values[corner] < iso:
-                        below += 1
-                if below == 0 or below == 8:
-                    continue
                 if count >= capacity:
                     count += 1
                     continue

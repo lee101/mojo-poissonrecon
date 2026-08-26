@@ -97,10 +97,14 @@ allocated once per level and reused across cycles.
 The Python boundary validates shapes, exact integer conversions, finiteness,
 contiguity, alignment, and non-null addresses before synchronous native calls;
 the local NumPy variables keep every buffer alive for the duration of each call.
-Residual evaluation uses native-width Float64 SIMD with a scalar remainder.
-Large grids use thresholded CPU parallelism for red-black relaxation, residual
-evaluation, restriction, and prolongation; smaller grids remain serial to avoid
-thread-launch overhead. No GPU path is provided.
+Residual evaluation, red-black relaxation, full-weighting restriction, and
+dual-cell classification use native-width Float64 SIMD with scalar boundary and
+remainder loops. Large grids use thresholded CPU parallelism for relaxation,
+residual evaluation, restriction, prolongation, and dual-cell classification;
+smaller grids remain serial to avoid thread-launch overhead. No GPU path is
+provided: these stencil and classification kernels perform fewer than roughly
+two arithmetic operations per byte moved, so transfer and launch costs are not
+justified.
 
 ## Benchmarks
 
@@ -111,11 +115,11 @@ Mojo parallel runtime and PyMeshLab used the machine's 36 physical cores.
 
 | Kernel | Mojo | Reference | Reference implementation | Speedup |
 |---|---:|---:|---|---:|
-| Morton octree coding, 50k points depth 8 | 2.052 ms | 5666.938 ms | NumPy source translation | 2761.10x |
-| Density/confidence splat, 30k points | 8.615 ms | 3443.053 ms | NumPy source translation | 399.65x |
-| Dual contour, 49^3 scalar grid | 10.664 ms | 3042.784 ms | NumPy source translation | 285.34x |
-| Full reconstruction, 2k points depth 5 | 32.705 ms | 694.586 ms | PyMeshLab PoissonRecon (36 threads) | 21.24x |
-| Full reconstruction, 20k points depth 7 | 745.872 ms | 3255.285 ms | PyMeshLab PoissonRecon (36 threads) | 4.36x |
+| Morton octree coding, 50k points depth 8 | 2.103 ms | 4400.773 ms | NumPy source translation | 2092.12x |
+| Density/confidence splat, 30k points | 4.581 ms | 3215.784 ms | NumPy source translation | 701.92x |
+| Dual contour, 49^3 scalar grid | 2.165 ms | 2881.674 ms | NumPy source translation | 1331.07x |
+| Full reconstruction, 2k points depth 5 | 24.075 ms | 401.883 ms | PyMeshLab PoissonRecon (36 threads) | 16.69x |
+| Full reconstruction, 20k points depth 7 | 457.957 ms | 2216.533 ms | PyMeshLab PoissonRecon (36 threads) | 4.84x |
 
 The first three comparisons isolate kernels that PyMeshLab does not expose.
 Their NumPy references favor auditability and parity, not speed. The final two

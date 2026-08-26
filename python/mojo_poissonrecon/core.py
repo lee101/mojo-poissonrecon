@@ -325,10 +325,18 @@ def extract_isosurface(
     if not np.isfinite(density).all():
         raise ValueError("density must be finite")
     n = field.shape[0]
+    count_scratch = np.empty(((n - 1) + 3) // 4, dtype=np.int64)
     dummy_i = np.zeros(1, dtype=np.int64)
     dummy_f = np.zeros(1, dtype=np.float64)
     count = lib().mpr_dual_vertices_f64(
-        addr(field), addr(density), n, iso_value, addr(dummy_i), addr(dummy_f), addr(dummy_f), 0
+        addr(field),
+        addr(density),
+        n,
+        iso_value,
+        addr(count_scratch),
+        addr(dummy_f),
+        addr(dummy_f),
+        0,
     )
     max_vertices = (n - 1) ** 3
     if count < 0 or count > max_vertices:
