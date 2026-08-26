@@ -1,14 +1,30 @@
 """Flat-buffer screened Poisson reconstruction kernels."""
 
-from std.algorithm import parallelize
 from std.ffi import external_call
 from std.math import sqrt
+from std.runtime.asyncrt import TaskGroup
 from std.sys.info import simd_width_of as simdwidthof
 
 comptime F64Ptr = UnsafePointer[Float64, AnyOrigin[mut=True]]
 comptime I64Ptr = UnsafePointer[Int64, AnyOrigin[mut=True]]
 comptime PARALLEL_GRID_THRESHOLD = 262_144
 comptime GRID_Z_CHUNK = 4
+
+
+# `parallelize` moved from `std.algorithm` to the separately distributed MAX
+# package in Mojo 1.1.  Keep this Mojo-only shared library self-contained by
+# dispatching its coarse grid tasks through the standard runtime directly.
+@always_inline
+def parallelize[
+    origins: OriginSet, //, func: def(Int) capturing[origins] -> None
+](num_work_items: Int):
+    async def run(task: Int):
+        func(task)
+
+    var tasks = TaskGroup()
+    for task in range(num_work_items):
+        tasks.create_task(run(task))
+    tasks.wait[origins]()
 
 
 @always_inline
