@@ -36,6 +36,22 @@ class BuildError(RuntimeError):
     pass
 
 
+def _link_args(mojo: str) -> list[str]:
+    """Record the AsyncRT runtime that ctypes resolves through this library."""
+    lib_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.realpath(mojo))), "lib"
+    )
+    if not os.path.isfile(os.path.join(lib_dir, "libKGENCompilerRTShared.so")):
+        raise BuildError("cannot locate the Mojo toolchain lib directory")
+    return [
+        "-Xlinker", "--no-as-needed",
+        "-Xlinker", f"-L{lib_dir}",
+        "-Xlinker", "-lKGENCompilerRTShared",
+        "-Xlinker", "-lAsyncRTMojoBindings",
+        "-Xlinker", "--as-needed",
+    ]
+
+
 def build(force: bool = False) -> str:
     if not force and os.path.exists(LIB) and os.path.getmtime(LIB) >= os.path.getmtime(SRC):
         return LIB
@@ -44,7 +60,8 @@ def build(force: bool = False) -> str:
         raise BuildError("mojo not found; run inside `pixi run`")
     os.makedirs(os.path.dirname(LIB), exist_ok=True)
     proc = subprocess.run(
-        [mojo, "build", "--emit", "shared-lib", SRC, "-o", LIB],
+        [mojo, "build", "--emit", "shared-lib", SRC, "-o", LIB]
+        + _link_args(mojo),
         capture_output=True,
         text=True,
         timeout=1800,
