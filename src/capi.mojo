@@ -360,27 +360,27 @@ def mpr_relax_f64(
                 var vector_end = 1 + (n - 2) // W * W
                 for x in range(1, vector_end, W):
                     var idx = grid_index(x, y, z, n)
-                    var center = work_solution.load[width=W](idx)
+                    var center = work_solution.unsafe_load[width=W](idx)
                     var neighbor_sum = (
-                        work_solution.load[width=W](idx - 1)
-                        + work_solution.load[width=W](idx + 1)
+                        work_solution.unsafe_load[width=W](idx - 1)
+                        + work_solution.unsafe_load[width=W](idx + 1)
                     )
                     if y > 0:
-                        neighbor_sum += work_solution.load[width=W](idx - n)
+                        neighbor_sum += work_solution.unsafe_load[width=W](idx - n)
                     if y + 1 < n:
-                        neighbor_sum += work_solution.load[width=W](idx + n)
+                        neighbor_sum += work_solution.unsafe_load[width=W](idx + n)
                     if z > 0:
-                        neighbor_sum += work_solution.load[width=W](idx - n * n)
+                        neighbor_sum += work_solution.unsafe_load[width=W](idx - n * n)
                     if z + 1 < n:
-                        neighbor_sum += work_solution.load[width=W](idx + n * n)
+                        neighbor_sum += work_solution.unsafe_load[width=W](idx + n * n)
                     var screening = (
                         point_weight
-                        * work_screen.load[width=W](idx)
+                        * work_screen.unsafe_load[width=W](idx)
                         * h_inv2
                     )
                     var diagonal = Float64(degree) * h_inv2 + screening
                     var updated = (
-                        work_rhs.load[width=W](idx) + neighbor_sum * h_inv2
+                        work_rhs.unsafe_load[width=W](idx) + neighbor_sum * h_inv2
                     ) / diagonal
                     var active = (
                         (iota[DType.int, W](x) + y + z) & 1
@@ -438,27 +438,27 @@ def residual_row(
     var vector_end = x_start + (x_end - x_start) // W * W
     for x in range(x_start, vector_end, W):
         var idx = row_start + x
-        var center = solution.load[width=W](idx)
+        var center = solution.unsafe_load[width=W](idx)
         var neighbor_sum = (
-            solution.load[width=W](idx - 1)
-            + solution.load[width=W](idx + 1)
+            solution.unsafe_load[width=W](idx - 1)
+            + solution.unsafe_load[width=W](idx + 1)
         )
         if y > 0:
-            neighbor_sum += solution.load[width=W](idx - n)
+            neighbor_sum += solution.unsafe_load[width=W](idx - n)
         if y + 1 < n:
-            neighbor_sum += solution.load[width=W](idx + n)
+            neighbor_sum += solution.unsafe_load[width=W](idx + n)
         if z > 0:
-            neighbor_sum += solution.load[width=W](idx - n * n)
+            neighbor_sum += solution.unsafe_load[width=W](idx - n * n)
         if z + 1 < n:
-            neighbor_sum += solution.load[width=W](idx + n * n)
+            neighbor_sum += solution.unsafe_load[width=W](idx + n * n)
         var screening = (
-            point_weight * screen.load[width=W](idx) * h_inv2
+            point_weight * screen.unsafe_load[width=W](idx) * h_inv2
         )
         var applied = (
             (Float64(degree) * h_inv2 + screening) * center
             - neighbor_sum * h_inv2
         )
-        residual.store(idx, rhs.load[width=W](idx) - applied)
+        residual.store(idx, rhs.unsafe_load[width=W](idx) - applied)
     for x in range(vector_end, x_end):
         var idx = row_start + x
         var pair = stencil_sum_and_degree(solution, x, y, z, n)
@@ -545,7 +545,7 @@ def mpr_residual_f64(
     var vector_end = size // W * W
     var square_sums = SIMD[DType.float64, W](0.0)
     for idx in range(0, vector_end, W):
-        var values = residual.load[width=W](idx)
+        var values = residual.unsafe_load[width=W](idx)
         square_sums += values * values
     var square_norm = square_sums.reduce_add()
     for idx in range(vector_end, size):
@@ -873,14 +873,14 @@ def mpr_dual_vertices_f64(
                         var row1 = grid_index(x, y + 1, z, n)
                         var row2 = grid_index(x, y, z + 1, n)
                         var row3 = grid_index(x, y + 1, z + 1, n)
-                        below += work_field.load[width=W](row0).lt(iso).select(1, 0)
-                        below += work_field.load[width=W](row0 + 1).lt(iso).select(1, 0)
-                        below += work_field.load[width=W](row1).lt(iso).select(1, 0)
-                        below += work_field.load[width=W](row1 + 1).lt(iso).select(1, 0)
-                        below += work_field.load[width=W](row2).lt(iso).select(1, 0)
-                        below += work_field.load[width=W](row2 + 1).lt(iso).select(1, 0)
-                        below += work_field.load[width=W](row3).lt(iso).select(1, 0)
-                        below += work_field.load[width=W](row3 + 1).lt(iso).select(1, 0)
+                        below += work_field.unsafe_load[width=W](row0).lt(iso).select(1, 0)
+                        below += work_field.unsafe_load[width=W](row0 + 1).lt(iso).select(1, 0)
+                        below += work_field.unsafe_load[width=W](row1).lt(iso).select(1, 0)
+                        below += work_field.unsafe_load[width=W](row1 + 1).lt(iso).select(1, 0)
+                        below += work_field.unsafe_load[width=W](row2).lt(iso).select(1, 0)
+                        below += work_field.unsafe_load[width=W](row2 + 1).lt(iso).select(1, 0)
+                        below += work_field.unsafe_load[width=W](row3).lt(iso).select(1, 0)
+                        below += work_field.unsafe_load[width=W](row3 + 1).lt(iso).select(1, 0)
                         var active = below.ne(0) & below.ne(8)
                         local_count += Int64(active.select(1, 0).reduce_add())
                     for tail_x in range(cells // W * W, cells):
@@ -923,14 +923,14 @@ def mpr_dual_vertices_f64(
                     var row1 = grid_index(x, y + 1, z, n)
                     var row2 = grid_index(x, y, z + 1, n)
                     var row3 = grid_index(x, y + 1, z + 1, n)
-                    below += work_field.load[width=W](row0).lt(iso).select(1, 0)
-                    below += work_field.load[width=W](row0 + 1).lt(iso).select(1, 0)
-                    below += work_field.load[width=W](row1).lt(iso).select(1, 0)
-                    below += work_field.load[width=W](row1 + 1).lt(iso).select(1, 0)
-                    below += work_field.load[width=W](row2).lt(iso).select(1, 0)
-                    below += work_field.load[width=W](row2 + 1).lt(iso).select(1, 0)
-                    below += work_field.load[width=W](row3).lt(iso).select(1, 0)
-                    below += work_field.load[width=W](row3 + 1).lt(iso).select(1, 0)
+                    below += work_field.unsafe_load[width=W](row0).lt(iso).select(1, 0)
+                    below += work_field.unsafe_load[width=W](row0 + 1).lt(iso).select(1, 0)
+                    below += work_field.unsafe_load[width=W](row1).lt(iso).select(1, 0)
+                    below += work_field.unsafe_load[width=W](row1 + 1).lt(iso).select(1, 0)
+                    below += work_field.unsafe_load[width=W](row2).lt(iso).select(1, 0)
+                    below += work_field.unsafe_load[width=W](row2 + 1).lt(iso).select(1, 0)
+                    below += work_field.unsafe_load[width=W](row3).lt(iso).select(1, 0)
+                    below += work_field.unsafe_load[width=W](row3 + 1).lt(iso).select(1, 0)
                     var active = below.ne(0) & below.ne(8)
                     work_cell_map.store(
                         cell_index(x, y, z, cells),
